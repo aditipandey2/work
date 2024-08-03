@@ -1,0 +1,205 @@
+# Ensure the necessary libraries are installed
+try:
+    import cairosvg
+    import cairocffi
+    import svgwrite
+except ImportError:
+    import os
+    os.system('pip install cairocffi cairosvg svgwrite')
+    import cairosvg
+    import cairocffi
+    import svgwrite
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Function to read CSV files
+def read_csv(csv_path):
+    np_path_XYs = np.genfromtxt(csv_path, delimiter=',')
+    path_XYs = []
+
+    for i in np.unique(np_path_XYs[:, 0]):
+        npXYs = np_path_XYs[np_path_XYs[:, 0] == i][:, 1:]
+        XYs = []
+
+        for j in np.unique(npXYs[:, 0]):
+            XY = npXYs[npXYs[:, 0] == j][:, 1:]
+            XYs.append(XY)
+        path_XYs.append(XYs)
+
+    return path_XYs
+
+# Function to visualize polylines
+def plot(paths_XYs):
+    fig, ax = plt.subplots(tight_layout=True, figsize=(8, 8))
+    for i, XYs in enumerate(paths_XYs):
+        for XY in XYs:
+            ax.plot(XY[:, 0], XY[:, 1], linewidth=2)
+    ax.set_aspect('equal')
+    plt.show()
+
+# Function to fit a circle
+def fit_circle(points):
+    x = points[:, 0]
+    y = points[:, 1]
+    x_m = np.mean(x)
+    y_m = np.mean(y)
+    u = x - x_m
+    v = y - y_m
+    Suu = np.dot(u, u)
+    Suv = np.dot(u, v)
+    Svv = np.dot(v, v)
+    Suuu = np.dot(u, u*u)
+    Suvv = np.dot(u, v*v)
+    Svvv = np.dot(v, v*v)
+    Svuu = np.dot(v, u*u)
+    A = np.array([[Suu, Suv], [Suv, Svv]])
+    b = np.array([Suuu + Suvv, Svvv + Svuu]) / 2
+    cx, cy = np.linalg.solve(A, b)
+    cx += x_m
+    cy += y_m
+    radius = np.sqrt((cx - x)**2 + (cy - y)**2).mean()
+    return cx, cy, radius
+
+# Function to fit an ellipse
+def fit_ellipse(points):
+    x = points[:, 0]
+    y = points[:, 1]
+    x_m = np.mean(x)
+    y_m = np.mean(y)
+    x = x - x_m
+    y = y - y_m
+    D1 = np.vstack([x**2, x*y, y**2]).T
+    D2 = np.vstack([x, y, np.ones(len(x))]).T
+    S1 = np.dot(D1.T, D1)
+    S2 = np.dot(D1.T, D2)
+    S3 = np.dot(D2.T, D2)
+    T = -np.dot(np.linalg.inv(S3), S2.T)
+    M = S1 + np.dot(S2, T)
+    M = np.array([[M[2, 2] / 2, -M[1, 2] / 2, M[0, 2] / 2],
+                  [-M[1, 2] / 2, M[1, 1] / 2, -M[0, 1] / 2],
+                  [M[0, 2] / 2, -M[0, 1] / 2, M[0, 0] / 2]])
+    _, v = np.linalg.eig(M)
+    a = np.dot(np.vstack([v[:2], np.zeros((1, 3))]), T)
+    b = v[:2]
+    return np.append(a, b, axis=0)
+
+# Function to identify straight lines
+def identify_straight_line(points, tolerance=1e-2):
+    x, y = points[:, 0], points[:, 1]
+    coeffs = np.polyfit(x, y, 1)
+    y_fit = np.polyval(coeffs, x)
+    error = np.sqrt(np.mean((y - y_fit) ** 2))
+    return error < tolerance
+
+# Function to identify circles and ellipses
+def identify_circle_or_ellipse(points):
+    cx, cy, radius = fit_circle(points)
+    x, y = points[:, 0], points[:, 1]
+    distances = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+    if np.std(distances) < 0.1:
+        return 'circle', (cx, cy, radius)
+    else:
+        ellipse_params = fit_ellipse(points)
+        return 'ellipse', ellipse_params
+
+# Function to identify rectangles
+def identify_rectangle(points):
+    if len(points) != 4:
+        return False
+    d1 = np.linalg.norm(points[0] - points[1])
+    d2 = np.linalg.norm(points[1] - points[2])
+    d3 = np.linalg.norm(points[2] - points[3])
+    d4 = np.linalg.norm(points[3] - points[0])
+    return np.isclose(d1, d3) and np.isclose(d2, d4)
+
+# Function to identify regular polygons
+def identify_regular_polygon(points, tolerance=1e-2):
+    n = len(points)
+    dists = np.linalg.norm(points - np.roll(points, 1, axis=0), axis=1)
+    return np.all(np.abs(dists - np.mean(dists)) < tolerance)
+
+# Function to identify star shapes
+def identify_star(points):
+    # Placeholder function: Implement star shape identification logic here
+    return False
+
+# Function to regularize shapes
+def regularize_shapes(paths_XYs):
+    regularized_shapes = []
+    for XYs in paths_XYs:
+        for XY in XYs:
+            if identify_straight_line(XY):
+                regularized_shapes.append([XY])
+            elif identify_rectangle(XY):
+                regularized_shapes.append([XY])
+            elif identify_regular_polygon(XY):
+                regularized_shapes.append([XY])
+            elif identify_star(XY):
+                regularized_shapes.append([XY])
+            else:
+                shape, params = identify_circle_or_ellipse(XY)
+                if shape == 'circle':
+                    cx, cy, radius = params
+                    theta = np.linspace(0, 2 * np.pi, 100)
+                    circle = np.vstack([cx + radius * np.cos(theta), cy + radius * np.sin(theta)]).T
+                    regularized_shapes.append([circle])
+                else:
+                    regularized_shapes.append([XY])  # Placeholder for ellipses
+    return regularized_shapes
+
+# Function to convert polylines to cubic Bézier curves and save as SVG
+def polylines2svg(paths_XYs, svg_path):
+    W, H = 0, 0
+    for path_XYs in paths_XYs:
+        for XY in path_XYs:
+            W, H = max(W, np.max(XY[:, 0])), max(H, np.max(XY[:, 1]))
+    padding = 0.1
+    W, H = int(W + padding * W), int(H + padding * H)
+    max_dim = 1000  # Cap on dimensions to prevent overflow
+    scale = min(max_dim / W, max_dim / H)
+    W, H = int(W * scale), int(H * scale)
+    dwg = svgwrite.Drawing(svg_path, profile='tiny', size=(W, H), shape_rendering='crispEdges')
+    group = dwg.g()
+    colours = ['black']
+    for i, path in enumerate(paths_XYs):
+        path_data = []
+        c = colours[i % len(colours)]
+        for XY in path:
+            scaled_XY = XY * scale
+            path_data.append(("M", (scaled_XY[0, 0], scaled_XY[0, 1])))
+            for j in range(1, len(scaled_XY)):
+                path_data.append(("L", (scaled_XY[j, 0], scaled_XY[j, 1])))
+            if not np.allclose(scaled_XY[0], scaled_XY[-1]):
+                path_data.append(("Z", None))
+        group.add(dwg.path(d=path_data, fill=c, stroke='none', stroke_width=2))
+    dwg.add(group)
+    dwg.save()
+    png_path = svg_path.replace('.svg', '.png')
+    fact = max(1, 1024 // min(H, W))
+    cairosvg.svg2png(url=svg_path, write_to=png_path, parent_width=W, parent_height=H, output_width=fact*W, output_height=fact*H, background_color='white')
+
+# Main function to execute the task
+def main():
+    # Replace this with your CSV file path
+    input_csv_path = 'frag0.csv'
+
+    # Read CSV file
+    paths_XYs = read_csv(input_csv_path)
+    
+    # Plot original polylines
+    plot(paths_XYs)
+    
+    # Regularize shapes
+    regularized_shapes = regularize_shapes(paths_XYs)
+    
+    # Plot regularized shapes
+    plot(regularized_shapes)
+    
+    # Convert to SVG and save
+    output_svg_path = 'output.svg'
+    polylines2svg(regularized_shapes, output_svg_path)
+    print(f"SVG file saved as {output_svg_path}")
+
+if __name__ == '__main__':
+    main()
